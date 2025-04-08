@@ -105,6 +105,8 @@ enum print_reason {
 
 #define JEITA_VOTER                     "JEITA_VOTER"
 
+#define BYPASS_VOTER			"BYPASS_VOTER"
+
 #define BOOST_BACK_STORM_COUNT	3
 #define WEAK_CHG_STORM_COUNT	8
 

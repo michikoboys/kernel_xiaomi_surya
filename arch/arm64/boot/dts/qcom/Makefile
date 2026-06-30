@@ -2,6 +2,7 @@ ifeq ($(CONFIG_MACH_XIAOMI),y)
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
 dtbo-$(CONFIG_MACH_XIAOMI_SURYA) += surya-sdmmagpie-overlay.dtbo
 surya-sdmmagpie-overlay.dtbo-base := surya-sdmmagpie.dtb
+DTC_FLAGS_surya-sdmmagpie += -@
 endif
 else
 # SPDX-License-Identifier: GPL-2.0

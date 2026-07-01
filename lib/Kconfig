@@ -47,6 +47,14 @@ config GENERIC_IOMAP
 
 config GENERIC_IO
 	bool
+config INLINE_OPTIMIZATION
+	bool "Use Clang Inline optimizations"
+	help
+	  Increased inlining can provide an improvement in performance, but also
+	  increases the size of the final kernel image. This config provides a bit
+	  more control on how much is inlined to further optimise the kernel for
+	  certain workloads.
+
 	default n
 
 config STMP_DEVICE

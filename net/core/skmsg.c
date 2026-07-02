@@ -490,7 +490,7 @@ struct sk_psock *sk_psock_init(struct sock *sk, int node)
 
 	psock->sk = sk;
 	psock->eval =  __SK_NONE;
-	psock->saved_destroy = prot->destroy;
+	psock->saved_destroy = sk->sk_prot->destroy;
 
 	INIT_LIST_HEAD(&psock->link);
 	spin_lock_init(&psock->link_lock);
@@ -676,7 +676,7 @@ static struct sk_psock *sk_psock_from_strp(struct strparser *strp)
 static void sk_psock_skb_redirect(struct sk_psock *psock, struct sk_buff *skb)
 {
 	struct sk_psock *psock_other;
-	struct sock *sk_other;
+        struct sock *sk_other;
 	bool ingress;
 
 	sk_other = tcp_skb_bpf_redirect_fetch(skb);
@@ -740,7 +740,7 @@ EXPORT_SYMBOL_GPL(sk_psock_tls_strp_read);
 static void sk_psock_verdict_apply(struct sk_psock *psock,
 				   struct sk_buff *skb, int verdict)
 {
-	struct sock *sk_other;
+        struct sock *sk_other;
 
 	switch (verdict) {
 	case __SK_REDIRECT:
@@ -749,7 +749,6 @@ static void sk_psock_verdict_apply(struct sk_psock *psock,
 	case __SK_DROP:
 		/* fall-through */
 	default:
-out_free:
 		kfree_skb(skb);
 	}
 }

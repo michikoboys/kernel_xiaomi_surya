@@ -22,14 +22,14 @@
 
 &pm6150l_rgb_led {
 	red {
-		label = "white";
+		label = "red";
 	};
 
 	green {
-		status = "disabled";
+		label = "green";
 	};
 
 	blue {
-		status = "disabled";
+		label = "blue";
 	};
 };

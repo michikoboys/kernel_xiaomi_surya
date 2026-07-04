@@ -125,6 +125,7 @@ struct kgsl_context;
  * @pagetable_list: LIst of open pagetables
  * @ptlock: Lock for accessing the pagetable list
  * @process_mutex: Mutex for accessing the process list
+ * @proclist_lock: Lock for accessing the process list
  * @devlock: Mutex protecting the device list
  * @stats: Struct containing atomic memory statistics
  * @full_cache_threshold: the threshold that triggers a full cache flush
@@ -143,6 +144,7 @@ struct kgsl_driver {
 	struct list_head pagetable_list;
 	spinlock_t ptlock;
 	struct mutex process_mutex;
+	spinlock_t proclist_lock;
 	struct mutex devlock;
 	struct {
 		atomic_long_t vmalloc;
@@ -162,7 +164,9 @@ struct kgsl_driver {
 	struct workqueue_struct *workqueue;
 	struct workqueue_struct *mem_workqueue;
 	struct kthread_worker worker;
+	struct kthread_worker low_prio_worker;
 	struct task_struct *worker_thread;
+	struct task_struct *low_prio_worker_thread;
 };
 
 extern struct kgsl_driver kgsl_driver;
@@ -301,6 +305,14 @@ struct kgsl_event_group;
 typedef void (*kgsl_event_func)(struct kgsl_device *, struct kgsl_event_group *,
 		void *, int);
 
+enum kgsl_priority {
+	KGSL_EVENT_REGULAR_PRIORITY = 0,
+	KGSL_EVENT_LOW_PRIORITY,
+	KGSL_EVENT_NUM_PRIORITIES
+};
+
+const char *prio_to_string(enum kgsl_priority prio);
+
 /**
  * struct kgsl_event - KGSL GPU timestamp event
  * @device: Pointer to the KGSL device that owns the event
@@ -310,7 +322,7 @@ typedef void (*kgsl_event_func)(struct kgsl_device *, struct kgsl_event_group *,
  * @priv: Private data passed to the callback function
  * @node: List node for the kgsl_event_group list
  * @created: Jiffies when the event was created
- * @work: kthread_work struct for dispatching the callback
+ * @work: Work struct for dispatching the callback
  * @result: KGSL event result type to pass to the callback
  * group: The event group this event belongs to
  */
@@ -324,6 +336,7 @@ struct kgsl_event {
 	unsigned int created;
 	struct kthread_work work;
 	int result;
+	enum kgsl_priority prio;
 	struct kgsl_event_group *group;
 };
 
@@ -561,6 +574,16 @@ kgsl_mem_entry_put(struct kgsl_mem_entry *entry)
 	if (entry)
 		kref_put(&entry->refcount, kgsl_mem_entry_destroy);
 }
+
+/**
+ * kgsl_mem_entry_put_deferred() - Puts refcount and triggers deferred
+ * mem_entry destroy when refcount is the last refcount.
+ * @entry: memory entry to be put.
+ *
+ * Use this to put a memory entry when we don't want to block
+ * the caller while destroying memory entry.
+ */
+void kgsl_mem_entry_put_deferred(struct kgsl_mem_entry *entry);
 
 /*
  * kgsl_addr_range_overlap() - Checks if 2 ranges overlap

@@ -29,6 +29,15 @@
 #include "kgsl_mmu.h"
 
 /*
+ * For now, we either need the low level cache operations or
+ * QCOM_KGSL_IOCOHERENCY_DEFAULT enabled because we can't stop userspace
+ * from expecting to enable cached surfaces and have them work
+ */
+#if !defined(dmac_flush_range) && !IS_ENABLED(CONFIG_QCOM_KGSL_IOCOHERENCY_DEFAULT)
+#error "KGSL needs either dmac_flush_range or CONFIG_QCOM_KGSL_IOCOHERENCY_DEFAULT enabled"
+#endif
+
+/*
  * The user can set this from debugfs to force failed memory allocations to
  * fail without trying OOM first.  This is a debug setting useful for
  * stress applications that want to test failure cases without pushing the
@@ -133,7 +142,18 @@ imported_mem_show(struct kgsl_process_private *priv,
 			}
 		}
 
-		kgsl_mem_entry_put(entry);
+		/*
+		 * If refcount on mem entry is the last refcount, we will
+		 * call kgsl_mem_entry_destroy and detach it from process
+		 * list. When there is no refcount on the process private,
+		 * we will call kgsl_destroy_process_private to do cleanup.
+		 * During cleanup, we will try to remove the same sysfs
+		 * node which is in use by the current thread and this
+		 * situation will end up in a deadloack.
+		 * To avoid this situation, use a worker to put the refcount
+		 * on mem entry.
+		 */
+		kgsl_mem_entry_put_deferred(entry);
 		spin_lock(&priv->mem_lock);
 	}
 	spin_unlock(&priv->mem_lock);
@@ -199,12 +219,6 @@ static ssize_t mem_entry_sysfs_show(struct kobject *kobj,
 	struct kgsl_process_private *priv;
 	ssize_t ret;
 
-	/*
-	 * kgsl_process_init_sysfs takes a refcount to the process_private,
-	 * which is put when the kobj is released. This implies that priv will
-	 * not be freed until this function completes, and no further locking
-	 * is needed.
-	 */
 	priv = kobj ? container_of(kobj, struct kgsl_process_private, kobj) :
 			NULL;
 
@@ -216,13 +230,9 @@ static ssize_t mem_entry_sysfs_show(struct kobject *kobj,
 	return ret;
 }
 
+/* Dummy release function - we have nothing to do here */
 static void mem_entry_release(struct kobject *kobj)
 {
-	struct kgsl_process_private *priv;
-
-	priv = container_of(kobj, struct kgsl_process_private, kobj);
-	/* Put the refcount we got in kgsl_process_init_sysfs */
-	kgsl_process_private_put(priv);
 }
 
 static const struct sysfs_ops mem_entry_sysfs_ops = {
@@ -271,9 +281,6 @@ void kgsl_process_init_sysfs(struct kgsl_device *device,
 {
 	unsigned char name[16];
 	int i;
-
-	/* Keep private valid until the sysfs enries are removed. */
-	kgsl_process_private_get(private);
 
 	snprintf(name, sizeof(name), "%d", pid_nr(private->pid));
 
@@ -486,12 +493,10 @@ done:
 
 int kgsl_lock_sgt(struct sg_table *sgt, uint64_t size)
 {
-	struct scatterlist *sg;
 	int dest_perms = PERM_READ | PERM_WRITE;
 	int source_vm = VMID_HLOS;
 	int dest_vm = VMID_CP_PIXEL;
 	int ret;
-	int i;
 
 	ret = hyp_assign_table(sgt, &source_vm, 1, &dest_vm, &dest_perms, 1);
 	if (ret) {
@@ -509,10 +514,6 @@ int kgsl_lock_sgt(struct sg_table *sgt, uint64_t size)
 		return ret;
 	}
 
-	/* Set private bit for each sg to indicate that its secured */
-	for_each_sg(sgt->sgl, sg, sgt->nents, i)
-		SetPagePrivate(sg_page(sg));
-
 	return 0;
 }
 
@@ -522,7 +523,6 @@ int kgsl_unlock_sgt(struct sg_table *sgt)
 	int source_vm = VMID_CP_PIXEL;
 	int dest_vm = VMID_HLOS;
 	int ret;
-	struct sg_page_iter sg_iter;
 
 	ret = hyp_assign_table(sgt, &source_vm, 1, &dest_vm, &dest_perms, 1);
 
@@ -531,8 +531,6 @@ int kgsl_unlock_sgt(struct sg_table *sgt)
 		return ret;
 	}
 
-	for_each_sg_page(sgt->sgl, &sg_iter, sgt->nents, 0)
-		ClearPagePrivate(sg_page_iter_page(&sg_iter));
 	return 0;
 }
 
@@ -684,7 +682,8 @@ static inline unsigned int _fixup_cache_range_op(unsigned int op)
 }
 #endif
 
-static inline void _cache_op(unsigned int op,
+#ifdef dmac_flush_range
+static void _cache_op(unsigned int op,
 			const void *start, const void *end)
 {
 	/*
@@ -704,8 +703,8 @@ static inline void _cache_op(unsigned int op,
 	}
 }
 
-static int kgsl_do_cache_op(struct page *page, void *addr,
-		uint64_t offset, uint64_t size, unsigned int op)
+static void kgsl_do_cache_op(struct page *page, void *addr, u64 offset,
+		u64 size, unsigned int op)
 {
 	if (page != NULL) {
 		unsigned long pfn = page_to_pfn(page) + offset / PAGE_SIZE;
@@ -734,15 +733,21 @@ static int kgsl_do_cache_op(struct page *page, void *addr,
 				offset = 0;
 			} while (size);
 
-			return 0;
+			return;
 		}
 
 		addr = page_address(page);
 	}
 
 	_cache_op(op, addr + offset, addr + offset + (size_t) size);
-	return 0;
 }
+#else
+
+static void kgsl_do_cache_op(struct page *page, void *addr, u64 offset,
+		u64 size, unsigned int op)
+{
+}
+#endif
 
 int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 		uint64_t size, unsigned int op)
@@ -751,7 +756,9 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 	struct sg_table *sgt = NULL;
 	struct scatterlist *sg;
 	unsigned int i, pos = 0;
-	int ret = 0;
+
+	if (memdesc->flags & KGSL_MEMFLAGS_IOCOHERENT)
+		return 0;
 
 	if (size == 0 || size > UINT_MAX)
 		return -EINVAL;
@@ -770,8 +777,8 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 		if (addr + ((size_t) offset + (size_t) size) < addr)
 			return -ERANGE;
 
-		ret = kgsl_do_cache_op(NULL, addr, offset, size, op);
-		return ret;
+		kgsl_do_cache_op(NULL, addr, offset, size, op);
+		return 0;
 	}
 
 	/*
@@ -782,7 +789,7 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 		sgt = memdesc->sgt;
 	else {
 		if (memdesc->pages == NULL)
-			return ret;
+			return 0;
 
 		sgt = kgsl_alloc_sgt_from_pages(memdesc);
 		if (IS_ERR(sgt))
@@ -799,7 +806,7 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 		sg_offset = offset > pos ? offset - pos : 0;
 		sg_left = (sg->length - sg_offset > size) ? size :
 					sg->length - sg_offset;
-		ret = kgsl_do_cache_op(sg_page(sg), NULL, sg_offset,
+		kgsl_do_cache_op(sg_page(sg), NULL, sg_offset,
 							sg_left, op);
 		size -= sg_left;
 		if (size == 0)
@@ -810,7 +817,7 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 	if (memdesc->sgt == NULL)
 		kgsl_free_sgt(sgt);
 
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL(kgsl_cache_range_op);
 
@@ -830,10 +837,24 @@ void kgsl_memdesc_init(struct kgsl_device *device,
 		flags &= ~((uint64_t) KGSL_MEMFLAGS_USE_CPU_MAP);
 
 	/* Disable IO coherence if it is not supported on the chip */
-	if (!MMU_FEATURE(mmu, KGSL_MMU_IO_COHERENT))
+	if (!MMU_FEATURE(mmu, KGSL_MMU_IO_COHERENT)) {
 		flags &= ~((uint64_t) KGSL_MEMFLAGS_IOCOHERENT);
 
-	if (MMU_FEATURE(mmu, KGSL_MMU_NEED_GUARD_PAGE))
+		WARN_ONCE(IS_ENABLED(CONFIG_QCOM_KGSL_IOCOHERENCY_DEFAULT),
+			"I/O coherency is not supported on this target\n");
+	} else if (IS_ENABLED(CONFIG_QCOM_KGSL_IOCOHERENCY_DEFAULT))
+		flags |= KGSL_MEMFLAGS_IOCOHERENT;
+
+	/*
+	 * We can't enable I/O coherency on uncached surfaces because of
+	 * situations where hardware might snoop the cpu caches which can
+	 * have stale data. This happens primarily due to the limitations
+	 * of dma caching APIs available on arm64
+	 */
+	if (!kgsl_cachemode_is_cached(flags))
+		flags &= ~((u64) KGSL_MEMFLAGS_IOCOHERENT);
+
+	if (MMU_FEATURE(mmu, KGSL_MMU_NEED_GUARD_PAGE) || (flags & KGSL_MEMFLAGS_GUARD_PAGE))
 		memdesc->priv |= KGSL_MEMDESC_GUARD_PAGE;
 
 	if (flags & KGSL_MEMFLAGS_SECURE)
@@ -929,7 +950,7 @@ kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 		page_count = kgsl_pool_alloc_page(&page_size,
 					memdesc->pages + pcount,
 					len_alloc - pcount,
-					&align);
+					&align, memdesc->dev);
 		if (page_count <= 0) {
 			if (page_count == -EAGAIN)
 				continue;
@@ -1423,9 +1444,6 @@ static int kgsl_cma_alloc_secure(struct kgsl_device *device,
 	if (result != 0)
 		goto err;
 
-	/* Set the private bit to indicate that we've secured this */
-	SetPagePrivate(sg_page(memdesc->sgt->sgl));
-
 	memdesc->priv |= KGSL_MEMDESC_TZ_LOCKED;
 
 	/* Record statistics */
@@ -1450,8 +1468,7 @@ static void kgsl_cma_unlock_secure(struct kgsl_memdesc *memdesc)
 	if (memdesc->size == 0 || !(memdesc->priv & KGSL_MEMDESC_TZ_LOCKED))
 		return;
 
-	if (!scm_lock_chunk(memdesc, 0))
-		ClearPagePrivate(sg_page(memdesc->sgt->sgl));
+	scm_lock_chunk(memdesc, 0);
 }
 
 void kgsl_sharedmem_set_noretry(bool val)

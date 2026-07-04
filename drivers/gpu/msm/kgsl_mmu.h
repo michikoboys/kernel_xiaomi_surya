@@ -141,6 +141,8 @@ struct kgsl_mmu_pt_ops {
 #define KGSL_MMU_NEED_GUARD_PAGE BIT(9)
 /* The device supports IO coherency */
 #define KGSL_MMU_IO_COHERENT BIT(10)
+/* The device supports aperture programming from secure world */
+#define KGSL_MMU_SMMU_APERTURE BIT(12)
 
 /**
  * struct kgsl_mmu - Master definition for KGSL MMU devices

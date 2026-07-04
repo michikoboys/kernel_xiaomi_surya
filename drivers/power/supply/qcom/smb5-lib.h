@@ -668,6 +668,7 @@ struct smb_charger {
 	int			smb_temp;
 	int			skin_temp;
 	int			connector_temp;
+	int				batt_temp;
 	int			thermal_status;
 	int			main_fcc_max;
 	u32			jeita_soft_thlds[2];

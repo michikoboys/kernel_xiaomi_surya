@@ -3627,6 +3627,16 @@ static int smblib_update_thermal_readings(struct smb_charger *chg)
 		return rc;
 	}
 
+	if (chg->batt_psy) {
+		rc = power_supply_get_property(chg->batt_psy,
+				POWER_SUPPLY_PROP_TEMP, &pval);
+		if (rc < 0) {
+			smblib_err(chg, "Couldn't read BATT TEMP, rc=%d\n", rc);
+			return rc;
+		}
+		chg->batt_temp = pval.intval;
+	}
+
 	if (chg->sec_chg_selected == POWER_SUPPLY_CHARGER_SEC_CP) {
 		if (is_cp_available(chg)) {
 			rc = power_supply_get_property(chg->cp_psy,
@@ -3678,6 +3688,9 @@ static int smblib_update_thermal_readings(struct smb_charger *chg)
 #define SKIN_TEMP_REG_H_THRESH		550
 #define SKIN_TEMP_REG_L_THRESH		500
 
+#define BATT_TEMP_SUSPEND_THRESH	480	/* 48C - cut charging */
+#define BATT_TEMP_RESUME_THRESH		460	/* 46C - resume charging */
+
 #define THERM_REG_RECHECK_DELAY_1S	1000	/* 1 sec */
 #define THERM_REG_RECHECK_DELAY_8S	8000	/* 8 sec */
 static int smblib_process_thermal_readings(struct smb_charger *chg)
@@ -3685,6 +3698,15 @@ static int smblib_process_thermal_readings(struct smb_charger *chg)
 	int rc = 0, wdog_timeout = SNARL_WDOG_TMOUT_8S;
 	u32 thermal_status = TEMP_BELOW_RANGE;
 	bool suspend_input = false, disable_smb = false;
+
+	/* Battery temperature based charging cut-off */
+	if (chg->batt_temp >= BATT_TEMP_SUSPEND_THRESH) {
+		vote(chg->usb_icl_votable, SW_THERM_REGULATION_VOTER, true, 0);
+		smblib_err(chg, "Batt temp %d >= %d, suspend charging\n",
+				chg->batt_temp, BATT_TEMP_SUSPEND_THRESH);
+	} else if (chg->batt_temp <= BATT_TEMP_RESUME_THRESH) {
+		vote(chg->usb_icl_votable, SW_THERM_REGULATION_VOTER, false, 0);
+	}
 
 	/*
 	 * Following is the SW thermal regulation flow:

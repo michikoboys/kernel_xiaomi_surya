@@ -4675,50 +4675,7 @@ static unsigned long _get_svm_area(struct kgsl_process_private *private,
 	unsigned long result;
 	unsigned long addr;
 
-	/*
-	 * Do additoinal constraints checking on the address. Passing MAP_FIXED
-	 * ensures that the address we want gets checked
-	 */
-	ret = current->mm->get_unmapped_area(file, addr, len, 0,
-		flags & MAP_FIXED);
-
-	/* If it passes, attempt to set the region in the SVM */
-	if (!IS_ERR_VALUE(ret))
-		return _gpu_set_svm_region(private, entry, addr, len);
-
-	return ret;
-}
-
-static unsigned long get_svm_unmapped_area(struct file *file,
-		struct kgsl_mem_entry *entry,
-		unsigned long addr, unsigned long len,
-		unsigned long flags)
-{
-	struct kgsl_device_private *dev_priv = file->private_data;
-	struct kgsl_process_private *private = dev_priv->process_priv;
-	unsigned long align = kgsl_get_align(&entry->memdesc);
-	unsigned long ret, iova;
-	u64 start = 0, end = 0;
-	struct vm_area_struct *vma;
-
-	if (flags & MAP_FIXED) {
-		/* Even fixed addresses need to obey alignment */
-		if (!IS_ALIGNED(addr, align))
-			return -EINVAL;
-
-		return set_svm_area(file, entry, addr, len, flags);
-	}
-
-	/* If a hint was provided, try to use that first */
-	if (addr) {
-		if (IS_ALIGNED(addr, align)) {
-			ret = set_svm_area(file, entry, addr, len, flags);
-			if (!IS_ERR_VALUE(ret))
-				return ret;
-		}
-	}
-
-	/* Get the SVM range for the current process */
+	/* get the GPU pagetable's SVM range */
 	if (kgsl_mmu_svm_range(private->pagetable, &start, &end,
 				entry->memdesc.flags))
 		return -ERANGE;
@@ -5316,6 +5273,7 @@ static int __init kgsl_core_init(void)
 	}
 
 	kgsl_driver.mem_workqueue = alloc_workqueue("kgsl-mementry",
+		WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 
 	if (!kgsl_driver.mem_workqueue) {
 		pr_err("kgsl: Failed to allocate mem workqueue\n");

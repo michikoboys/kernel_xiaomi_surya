@@ -44,7 +44,7 @@
 		qcom,mdss-dsi-panel-peak-brightness = <5000000>;
 		qcom,mdss-dsi-panel-blackness-level = <3230>;
 		qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
-		qcom,mdss-dsi-bl-min-level = <16>;
+		qcom,mdss-dsi-bl-min-level = <24>;
 		qcom,mdss-dsi-bl-max-level = <4095>;
 		qcom,mdss-dsi-post-init-delay = <1>;
 		qcom,mdss-dsi-qsync-min-refresh-rate = <30>;
@@ -233,13 +233,13 @@
 					15 01 00 00 00 00 02 FF 10
 					15 01 00 00 00 00 02 FB 01
 					15 01 00 00 00 00 02 53 2C
-					15 01 00 00 00 00 02 51 C1
+					15 01 00 00 00 00 02 51 E6
 				];
 				qcom,mdss-dsi-dispparam-hbm-on-command = [
 					15 01 00 00 00 00 02 51 E6
 				];
 				qcom,mdss-dsi-dispparam-hbm-off-command = [
-					15 01 00 00 00 00 02 51 B8
+					15 01 00 00 00 00 02 51 E6
 				];
 				qcom,mdss-dsi-hbm1-on-command = [
 					15 01 00 00 00 00 02 51 E6
